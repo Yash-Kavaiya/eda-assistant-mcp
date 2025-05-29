@@ -10,7 +10,7 @@ startCommand:
   commandFunction: |
     (config) => ({
       "command": "python",
-      "args": ["main.py"],
+      "args": ["server.py"],
       "env": {}
     })
 
