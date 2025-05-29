@@ -1024,7 +1024,325 @@ EDA Quality Metrics Dashboard for: {analysis_results}
 - Automated quality reporting
 - Stakeholder notification system
 """
+# =============================================================================
+# FILE READING TOOLS - Add these to your existing server.py
+# =============================================================================
 
+import os
+import pandas as pd
+from pathlib import Path
+
+@mcp.tool()
+def read_text_file(file_path: str) -> str:
+    """
+    Read the contents of a text file from the filesystem.
+    
+    Args:
+        file_path: Path to the text file to read
+        
+    Returns:
+        String containing the file contents
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        PermissionError: If there are insufficient permissions to read the file
+        UnicodeDecodeError: If the file cannot be decoded as text
+    """
+    try:
+        # Convert to Path object for better path handling
+        path = Path(file_path)
+        
+        # Check if file exists
+        if not path.exists():
+            return f"Error: File '{file_path}' does not exist."
+        
+        # Check if it's actually a file (not a directory)
+        if not path.is_file():
+            return f"Error: '{file_path}' is not a file."
+        
+        # Read the file with different encodings if needed
+        encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        
+        for encoding in encodings:
+            try:
+                with open(path, 'r', encoding=encoding) as file:
+                    content = file.read()
+                
+                # Return content with metadata
+                file_info = {
+                    'file_path': str(path.absolute()),
+                    'file_size': path.stat().st_size,
+                    'encoding_used': encoding,
+                    'line_count': len(content.splitlines()),
+                    'character_count': len(content)
+                }
+                
+                return f"""File successfully read!
+
+File Information:
+- Path: {file_info['file_path']}
+- Size: {file_info['file_size']} bytes
+- Encoding: {file_info['encoding_used']}
+- Lines: {file_info['line_count']}
+- Characters: {file_info['character_count']}
+
+Content:
+{'='*50}
+{content}
+{'='*50}"""
+                
+            except UnicodeDecodeError:
+                continue
+        
+        return f"Error: Could not decode file '{file_path}' with any standard encoding."
+        
+    except PermissionError:
+        return f"Error: Permission denied reading file '{file_path}'."
+    except Exception as e:
+        return f"Error reading file '{file_path}': {str(e)}"
+
+@mcp.tool()
+def read_csv_file(file_path: str, preview_rows: int = 10, encoding: str = "utf-8") -> str:
+    """
+    Read and analyze a CSV file from the filesystem.
+    
+    Args:
+        file_path: Path to the CSV file to read
+        preview_rows: Number of rows to show in preview (default: 10)
+        encoding: File encoding (default: utf-8)
+        
+    Returns:
+        String containing CSV analysis and preview
+        
+    Raises:
+        FileNotFoundError: If the file doesn't exist
+        pandas.errors.EmptyDataError: If the CSV is empty
+        pandas.errors.ParserError: If the CSV format is invalid
+    """
+    try:
+        # Convert to Path object
+        path = Path(file_path)
+        
+        # Check if file exists
+        if not path.exists():
+            return f"Error: File '{file_path}' does not exist."
+        
+        # Check if it's actually a file
+        if not path.is_file():
+            return f"Error: '{file_path}' is not a file."
+        
+        # Try different encodings if the specified one fails
+        encodings_to_try = [encoding, 'utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+        
+        df = None
+        encoding_used = None
+        
+        for enc in encodings_to_try:
+            try:
+                # Read CSV with pandas
+                df = pd.read_csv(path, encoding=enc)
+                encoding_used = enc
+                break
+            except UnicodeDecodeError:
+                continue
+            except pd.errors.EmptyDataError:
+                return f"Error: CSV file '{file_path}' is empty."
+            except pd.errors.ParserError as e:
+                return f"Error: Could not parse CSV file '{file_path}': {str(e)}"
+        
+        if df is None:
+            return f"Error: Could not read CSV file '{file_path}' with any standard encoding."
+        
+        # Basic analysis
+        file_info = {
+            'file_path': str(path.absolute()),
+            'file_size': path.stat().st_size,
+            'encoding_used': encoding_used,
+            'rows': len(df),
+            'columns': len(df.columns),
+            'column_names': df.columns.tolist(),
+            'data_types': df.dtypes.to_dict(),
+            'memory_usage': df.memory_usage(deep=True).sum(),
+            'missing_values': df.isnull().sum().to_dict()
+        }
+        
+        # Generate summary
+        result = f"""CSV File Successfully Loaded!
+
+File Information:
+- Path: {file_info['file_path']}
+- Size: {file_info['file_size']} bytes
+- Encoding: {file_info['encoding_used']}
+- Dimensions: {file_info['rows']} rows × {file_info['columns']} columns
+- Memory Usage: {file_info['memory_usage']:,} bytes
+
+Columns and Data Types:
+{'-'*40}"""
+        
+        for col, dtype in file_info['data_types'].items():
+            missing = file_info['missing_values'][col]
+            missing_pct = (missing / file_info['rows'] * 100) if file_info['rows'] > 0 else 0
+            result += f"\n- {col}: {dtype} (Missing: {missing}/{file_info['rows']} = {missing_pct:.1f}%)"
+        
+        # Add data preview
+        result += f"\n\nData Preview (First {min(preview_rows, len(df))} rows):\n{'='*60}\n"
+        
+        if len(df) > 0:
+            # Format the preview nicely
+            preview_df = df.head(preview_rows)
+            result += preview_df.to_string(max_cols=None, max_colwidth=50)
+        else:
+            result += "No data rows found in CSV."
+        
+        # Add basic statistics for numeric columns
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            result += f"\n\nNumeric Columns Summary:\n{'-'*40}\n"
+            result += df[numeric_cols].describe().to_string()
+        
+        result += f"\n{'='*60}"
+        
+        return result
+        
+    except FileNotFoundError:
+        return f"Error: File '{file_path}' not found."
+    except PermissionError:
+        return f"Error: Permission denied reading file '{file_path}'."
+    except Exception as e:
+        return f"Error reading CSV file '{file_path}': {str(e)}"
+
+@mcp.tool()
+def list_files_in_directory(directory_path: str, file_extension: str = None) -> str:
+    """
+    List files in a directory, optionally filtered by extension.
+    
+    Args:
+        directory_path: Path to the directory to list
+        file_extension: Optional file extension filter (e.g., '.txt', '.csv')
+        
+    Returns:
+        String containing list of files with metadata
+    """
+    try:
+        # Convert to Path object
+        path = Path(directory_path)
+        
+        # Check if directory exists
+        if not path.exists():
+            return f"Error: Directory '{directory_path}' does not exist."
+        
+        # Check if it's actually a directory
+        if not path.is_dir():
+            return f"Error: '{directory_path}' is not a directory."
+        
+        # Get files
+        if file_extension:
+            files = list(path.glob(f"*{file_extension}"))
+            filter_msg = f" (filtered by extension: {file_extension})"
+        else:
+            files = [f for f in path.iterdir() if f.is_file()]
+            filter_msg = ""
+        
+        if not files:
+            return f"No files found in directory '{directory_path}'{filter_msg}."
+        
+        # Sort files by name
+        files.sort(key=lambda x: x.name.lower())
+        
+        result = f"Files in directory: {path.absolute()}{filter_msg}\n"
+        result += f"Found {len(files)} file(s)\n"
+        result += "="*60 + "\n"
+        
+        for file in files:
+            try:
+                stat = file.stat()
+                size = stat.st_size
+                
+                # Format size nicely
+                if size < 1024:
+                    size_str = f"{size} B"
+                elif size < 1024*1024:
+                    size_str = f"{size/1024:.1f} KB"
+                else:
+                    size_str = f"{size/(1024*1024):.1f} MB"
+                
+                result += f"📄 {file.name:<40} {size_str:>10}\n"
+                
+            except Exception as e:
+                result += f"📄 {file.name:<40} (Error reading metadata)\n"
+        
+        result += "="*60
+        
+        return result
+        
+    except PermissionError:
+        return f"Error: Permission denied accessing directory '{directory_path}'."
+    except Exception as e:
+        return f"Error listing directory '{directory_path}': {str(e)}"
+
+@mcp.tool()
+def get_file_info(file_path: str) -> str:
+    """
+    Get detailed information about a file.
+    
+    Args:
+        file_path: Path to the file to analyze
+        
+    Returns:
+        String containing detailed file information
+    """
+    try:
+        path = Path(file_path)
+        
+        if not path.exists():
+            return f"Error: File '{file_path}' does not exist."
+        
+        if not path.is_file():
+            return f"Error: '{file_path}' is not a file."
+        
+        stat = path.stat()
+        
+        # Format size
+        size = stat.st_size
+        if size < 1024:
+            size_str = f"{size} bytes"
+        elif size < 1024*1024:
+            size_str = f"{size/1024:.1f} KB ({size:,} bytes)"
+        else:
+            size_str = f"{size/(1024*1024):.1f} MB ({size:,} bytes)"
+        
+        # Get file extension and type
+        extension = path.suffix.lower()
+        file_type = "Unknown"
+        
+        if extension in ['.txt', '.md', '.log']:
+            file_type = "Text file"
+        elif extension in ['.csv']:
+            file_type = "CSV (Comma-Separated Values)"
+        elif extension in ['.json']:
+            file_type = "JSON data"
+        elif extension in ['.xml']:
+            file_type = "XML data"
+        elif extension in ['.xlsx', '.xls']:
+            file_type = "Excel spreadsheet"
+        
+        result = f"""File Information: {path.name}
+{'='*50}
+Full Path: {path.absolute()}
+Directory: {path.parent}
+File Name: {path.name}
+Extension: {extension if extension else 'None'}
+File Type: {file_type}
+Size: {size_str}
+Created: {pd.Timestamp.fromtimestamp(stat.st_ctime).strftime('%Y-%m-%d %H:%M:%S')}
+Modified: {pd.Timestamp.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}
+Accessed: {pd.Timestamp.fromtimestamp(stat.st_atime).strftime('%Y-%m-%d %H:%M:%S')}
+{'='*50}"""
+        
+        return result
+        
+    except Exception as e:
+        return f"Error getting file info for '{file_path}': {str(e)}"
 if __name__ == "__main__":
     # Run the MCP server
     mcp.run()
